@@ -24,7 +24,17 @@
             "outFiles": [
                 "${workspaceFolder}/out/test/**/*.js"
             ],
-            "preLaunchTask": "${workspaceFolder}/npm: compile"
+            "preLaunchTask": "${workspaceFolder}/npm: compile",
+            "internalConsoleOptions": "openOnSessionStart"
+        },
+        {
+            "name": "Attach to Extension Host",
+            "type": "node",
+            "request": "attach",
+            "port": 5870,
+            "outFiles": [
+                "${workspaceFolder}/out/**/*.js"
+            ]
         }
     ]
 }
