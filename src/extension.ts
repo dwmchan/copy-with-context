@@ -1,6 +1,53 @@
 import * as vscode from 'vscode';
 import * as path from 'path';
 
+// Safety wrapper for any operation
+function safeExecute<T>(operation: () => T, fallback: T, context: string): T {
+    try {
+        return operation();
+    } catch (error) {
+        console.error(`${context} failed:`, error);
+        return fallback;
+    }
+}
+
+// File size validation
+function validateFileSize(document: vscode.TextDocument): boolean {
+    const config = vscode.workspace.getConfiguration('copyWithContext');
+    const maxSize = config.get<number>('maxFileSize', 5000000); // 5MB default
+    const text = document.getText();
+    
+    if (text.length > maxSize) {
+        const sizeMB = Math.round(text.length / 1024 / 1024);
+        vscode.window.showWarningMessage(
+            `File is too large (${sizeMB}MB). Select a smaller portion.`
+        );
+        return false;
+    }
+    return true;
+}
+
+// Safe command executor
+async function safeExecuteCommand(commandHandler: () => Promise<void>): Promise<void> {
+    const editor = vscode.window.activeTextEditor;
+    
+    if (!editor) {
+        vscode.window.showWarningMessage('No active editor found');
+        return;
+    }
+
+    if (!validateFileSize(editor.document)) {
+        return;
+    }
+
+    try {
+        await commandHandler();
+    } catch (error) {
+        console.error('Command execution failed:', error);
+        vscode.window.showErrorMessage('Operation failed. Please try again with a smaller selection.');
+    }
+}
+
 // Delimiter detection for CSV and other delimited files
 function detectDelimiter(text: string): string {
     const lines = text.split('\n').slice(0, 5); // Check first 5 lines
@@ -192,7 +239,7 @@ function addBasicSyntaxHighlighting(code: string, language: string): string {
                 .replace(patterns.comment, `<span style="color: ${colors.comment}">$1</span>`)
                 .replace(patterns.string, `<span style="color: ${colors.string}">$1$2$3</span>`)
                 .replace(patterns.keyword, `<span style="color: ${colors.keyword}">$1</span>`)
-                .replace(patterns.number, `<span style="color: ${colors.number}">// Context detection functions</span>`)
+                .replace(patterns.number, `<span style="color: ${colors.number}">$1</span>`)
                 .replace(patterns.function, `<span style="color: ${colors.function}">$1</span>`);
             break;
             
@@ -202,7 +249,7 @@ function addBasicSyntaxHighlighting(code: string, language: string): string {
                 .replace(patterns.comment, `<span style="color: ${colors.comment}">$1</span>`)
                 .replace(patterns.string, `<span style="color: ${colors.string}">$1$2$3</span>`)
                 .replace(pythonKeywords, `<span style="color: ${colors.keyword}">$1</span>`)
-                .replace(patterns.number, `<span style="color: ${colors.number}">// Context detection functions</span>`)
+                .replace(patterns.number, `<span style="color: ${colors.number}">$1</span>`)
                 .replace(patterns.function, `<span style="color: ${colors.function}">$1</span>`);
             break;
             
@@ -252,109 +299,134 @@ function generateAnsiColoredText(code: string, language: string): string {
                 .replace(/(\/\/.*$)/gm, 
                          `${ansiColors.comment}$1${ansiColors.reset}`)
                 .replace(/\b\d+\.?\d*\b/g, 
-                         `${ansiColors.number}// Context detection functions${ansiColors.reset}`);
+                         `${ansiColors.number}$1${ansiColors.reset}`);
             break;
     }
     
     return coloredCode;
 }
+
+// Context detection functions
 function getJsonPath(document: vscode.TextDocument, position: vscode.Position): string | null {
-    try {
+    return safeExecute(() => {
         const text = document.getText();
-        const offset = document.offsetAt(position);
         
-        // Find the JSON path by parsing and tracking position
-        const jsonObj = JSON.parse(text);
-        return findJsonPath(text, offset);
-    } catch (error) {
-        return null;
-    }
+        // First, try to parse the JSON to make sure it's valid
+        let jsonObj;
+        try {
+            jsonObj = JSON.parse(text);
+        } catch (parseError) {
+            return null;
+        }
+        
+        return findJsonPathByPosition(text, position);
+    }, null, 'JSON path detection');
 }
 
-function findJsonPath(jsonText: string, targetOffset: number): string | null {
+function findJsonPathByPosition(jsonText: string, position: vscode.Position): string | null {
     try {
-        const path: string[] = [];
-        let currentOffset = 0;
-        let inString = false;
-        let inKey = false;
-        let currentKey = '';
-        let arrayIndex = 0;
-        const bracketStack: { type: 'object' | 'array', key?: string, index?: number }[] = [];
+        // Split into lines for easier processing
+        const lines = jsonText.split('\n');
+        const targetLine = position.line;
         
-        for (let i = 0; i < jsonText.length && i <= targetOffset; i++) {
-            const char = jsonText[i];
-            const prevChar = i > 0 ? jsonText[i - 1] : '';
-            
-            if (char === '"' && prevChar !== '\\') {
-                inString = !inString;
-                if (!inString && inKey) {
-                    currentKey = jsonText.substring(currentOffset + 1, i);
-                    inKey = false;
+        // Find the key on the current line or nearby lines
+        let currentKey = null;
+        
+        // Check current line first
+        const currentLineText = lines[targetLine] || '';
+        let keyMatch = currentLineText.match(/"([^"]+)"\s*:/);
+        
+        if (keyMatch && keyMatch[1]) {
+            currentKey = keyMatch[1];
+        } else {
+            // Look backwards for the key
+            for (let i = targetLine; i >= Math.max(0, targetLine - 3); i--) {
+                const lineText = lines[i] || '';
+                keyMatch = lineText.match(/"([^"]+)"\s*:/);
+                if (keyMatch && keyMatch[1]) {
+                    currentKey = keyMatch[1];
+                    break;
                 }
-                if (inString) {
-                    currentOffset = i;
-                    // Check if this might be a key (followed by :)
-                    let j = i + 1;
-                    while (j < jsonText.length && /\s/.test(jsonText[j])) j++;
-                    if (j < jsonText.length && jsonText[j] === ':') {
-                        inKey = true;
-                    }
-                }
-            } else if (!inString) {
-                if (char === '{') {
-                    bracketStack.push({ type: 'object', key: currentKey });
-                    if (currentKey) {
-                        path.push(currentKey);
-                        currentKey = '';
-                    }
-                } else if (char === '[') {
-                    bracketStack.push({ type: 'array', index: 0 });
-                    if (currentKey) {
-                        path.push(currentKey);
-                        currentKey = '';
-                    }
-                } else if (char === '}' || char === ']') {
-                    const popped = bracketStack.pop();
-                    if (popped && path.length > 0) {
-                        path.pop();
-                    }
-                } else if (char === ',' && bracketStack.length > 0) {
-                    const top = bracketStack[bracketStack.length - 1];
-                    if (top.type === 'array') {
-                        top.index = (top.index || 0) + 1;
-                    }
-                }
-            }
-            
-            if (i >= targetOffset) {
-                // Build the final path
-                const finalPath = [...path];
-                const top = bracketStack[bracketStack.length - 1];
-                if (top) {
-                    if (top.type === 'array' && typeof top.index === 'number') {
-                        finalPath.push(`[${top.index}]`);
-                    } else if (currentKey) {
-                        finalPath.push(currentKey);
-                    }
-                }
-                return finalPath.length > 0 ? finalPath.join('.').replace(/\.\[/g, '[') : null;
             }
         }
         
+        if (!currentKey) {
+            return null;
+        }
+        
+        // Build the path by counting braces/brackets up to the target line
+        const path = [];
+        let braceDepth = 0;
+        let inString = false;
+        let currentObjectKey = null;
+        
+        for (let lineNum = 0; lineNum <= targetLine; lineNum++) {
+            const line = lines[lineNum] || '';
+            
+            for (let charPos = 0; charPos < line.length; charPos++) {
+                const char = line[charPos];
+                const prevChar = charPos > 0 ? line[charPos - 1] : '';
+                
+                // Handle strings
+                if (char === '"' && prevChar !== '\\') {
+                    inString = !inString;
+                    
+                    if (!inString) {
+                        // Just exited a string, check if it's a key
+                        const afterString = line.substring(charPos + 1);
+                        const colonMatch = afterString.match(/^\s*:/);
+                        if (colonMatch) {
+                            // This was a key, extract it
+                            const beforeQuote = line.lastIndexOf('"', charPos - 1);
+                            if (beforeQuote >= 0) {
+                                const key = line.substring(beforeQuote + 1, charPos);
+                                currentObjectKey = key;
+                            }
+                        }
+                    }
+                } else if (!inString) {
+                    if (char === '{') {
+                        if (currentObjectKey && braceDepth < path.length) {
+                            path[braceDepth] = currentObjectKey;
+                        } else if (currentObjectKey) {
+                            path.push(currentObjectKey);
+                        }
+                        braceDepth++;
+                        currentObjectKey = null;
+                    } else if (char === '}') {
+                        braceDepth--;
+                        if (path.length > braceDepth) {
+                            path.length = braceDepth;
+                        }
+                    }
+                }
+                
+                // If we've reached our target position, stop
+                if (lineNum === targetLine) {
+                    break;
+                }
+            }
+        }
+        
+        // Add the current key if we found one
+        if (currentKey && (path.length === 0 || path[path.length - 1] !== currentKey)) {
+            path.push(currentKey);
+        }
+        
         return path.length > 0 ? path.join('.') : null;
+        
     } catch (error) {
         return null;
     }
 }
 
 function getXmlPath(document: vscode.TextDocument, position: vscode.Position): string | null {
-    try {
+    return safeExecute(() => {
         const text = document.getText();
         const lines = text.split('\n');
         const currentLine = position.line;
         
-        const path: string[] = [];
-        const tagStack: string[] = [];
+        const tagStack: Array<{name: string, index: number}> = [];
         
         // Parse from beginning to current position to build XML path
         for (let i = 0; i <= currentLine; i++) {
@@ -375,281 +447,285 @@ function getXmlPath(document: vscode.TextDocument, position: vscode.Position): s
                     tagStack.pop();
                 } else if (!fullTag.endsWith('/>')) {
                     // Opening tag (not self-closing)
-                    tagStack.push(tagName);
+                    const siblingIndex = countSiblingsBeforePosition(text, tagName, tagStack.length, i, match.index);
+                    tagStack.push({
+                        name: tagName,
+                        index: siblingIndex
+                    });
                 }
             }
         }
         
-        return tagStack.length > 0 ? tagStack.join(' > ') : null;
+        if (tagStack.length === 0) {
+            return null;
+        }
+        
+        // Build path with indices for repeated elements
+        const pathParts = [];
+        for (const tag of tagStack) {
+            if (tag.index > 0) {
+                pathParts.push(`${tag.name}[${tag.index}]`);
+            } else {
+                pathParts.push(tag.name);
+            }
+        }
+        
+        return pathParts.join(' > ');
+    }, null, 'XML path detection');
+}
+
+function countSiblingsBeforePosition(xmlText: string, tagName: string, targetDepth: number, lineIndex: number, charIndex: number): number {
+    try {
+        const lines = xmlText.split('\n');
+        let siblingCount = 0;
+        let currentDepth = 0;
+        
+        // Parse from beginning up to the current position
+        for (let i = 0; i < lineIndex || (i === lineIndex && charIndex >= 0); i++) {
+            const line = lines[i];
+            if (!line) continue;
+            
+            const tagRegex = /<\/?([a-zA-Z][a-zA-Z0-9-_]*)[^>]*>/g;
+            let match;
+            
+            while ((match = tagRegex.exec(line)) !== null) {
+                // Stop if we've reached our target position
+                if (i === lineIndex && match.index >= charIndex) {
+                    break;
+                }
+                
+                const fullTag = match[0];
+                const currentTagName = match[1];
+                
+                if (fullTag.startsWith('</')) {
+                    // Closing tag
+                    currentDepth--;
+                } else if (!fullTag.endsWith('/>')) {
+                    // Opening tag (not self-closing)
+                    if (currentDepth === targetDepth && currentTagName === tagName) {
+                        // Found a sibling at the same depth with same name
+                        siblingCount++;
+                    }
+                    currentDepth++;
+                }
+            }
+        }
+        
+        return siblingCount;
     } catch (error) {
-        return null;
+        return 0;
     }
 }
 
-function getDelimitedContext(document: vscode.TextDocument, position: vscode.Position): string | null {
-    try {
+function getDelimitedContextWithSelection(document: vscode.TextDocument, selection: vscode.Selection): string | null {
+    return safeExecute(() => {
         const text = document.getText();
         const delimiter = detectDelimiter(text);
         const delimiterName = getDelimiterName(delimiter);
         const lines = text.split('\n');
         
-        if (lines.length === 0) return null;
+        if (lines.length === 0) return delimiterName;
         
         // Get column information if possible
         const firstLine = lines[0];
-        if (firstLine) {
-            const headers = firstLine.split(delimiter);
-            const currentColumn = position.character;
+        if (!firstLine) return delimiterName;
+        
+        // Parse headers properly, considering quoted fields
+        const headers = parseDelimitedLine(firstLine, delimiter);
+        const currentLine = lines[selection.start.line];
+        
+        if (!currentLine) return delimiterName;
+        
+        // Parse the current line to find which columns are selected
+        const fields = parseDelimitedLine(currentLine, delimiter);
+        
+        // Check if first row looks like headers or data
+        const hasHeaders = detectHeaders(headers, lines);
+        
+        // Find which columns are covered by the selection
+        const columnRange = getColumnRangeFromSelection(currentLine, selection, delimiter, fields);
+        
+        if (columnRange) {
+            const { startColumn, endColumn } = columnRange;
             
-            // Find which column we're in
-            let columnIndex = 0;
-            let charCount = 0;
-            
-            for (let i = 0; i < headers.length; i++) {
-                charCount += headers[i].length;
-                if (currentColumn <= charCount) {
-                    columnIndex = i;
-                    break;
+            if (startColumn === endColumn) {
+                // Single column
+                let columnName;
+                if (hasHeaders && startColumn < headers.length) {
+                    columnName = headers[startColumn].trim().replace(/^["']|["']$/g, '');
+                } else {
+                    columnName = `Column ${startColumn + 1}`;
                 }
-                charCount += delimiter.length; // Account for delimiter
-            }
-            
-            if (columnIndex < headers.length) {
-                const columnName = headers[columnIndex].trim().replace(/["']/g, '');
-                return `${delimiterName} > Column: ${columnName}`;
+                return `${delimiterName} > ${columnName}`;
+            } else {
+                // Multiple columns - show all individual column names
+                const columnNames = [];
+                
+                for (let i = startColumn; i <= endColumn; i++) {
+                    if (hasHeaders && i < headers.length) {
+                        const headerName = headers[i].trim().replace(/^["']|["']$/g, '');
+                        columnNames.push(headerName);
+                    } else {
+                        columnNames.push(`Column ${i + 1}`);
+                    }
+                }
+                
+                return `${delimiterName} > ${columnNames.join(', ')}`;
             }
         }
         
         return delimiterName;
-    } catch (error) {
-        return null;
-    }
+    }, null, 'Delimited file context detection');
 }
 
-function getCssContext(document: vscode.TextDocument, position: vscode.Position): string | null {
+function parseDelimitedLine(line: string, delimiter: string): string[] {
+    const fields: string[] = [];
+    let current = '';
+    let inQuotes = false;
+    let quoteChar = '';
+    
+    for (let i = 0; i < line.length; i++) {
+        const char = line[i];
+        
+        if (!inQuotes && (char === '"' || char === "'")) {
+            // Starting a quoted field
+            inQuotes = true;
+            quoteChar = char;
+            current += char;
+        } else if (inQuotes && char === quoteChar) {
+            // Check for escaped quotes (double quotes)
+            if (i + 1 < line.length && line[i + 1] === quoteChar) {
+                // Escaped quote, add both and skip next
+                current += char + char;
+                i++;
+            } else {
+                // End of quoted field
+                inQuotes = false;
+                current += char;
+            }
+        } else if (!inQuotes && line.substring(i, i + delimiter.length) === delimiter) {
+            // Found delimiter outside quotes
+            fields.push(current);
+            current = '';
+            i += delimiter.length - 1; // Skip delimiter (subtract 1 because loop will increment)
+        } else {
+            // Regular character
+            current += char;
+        }
+    }
+    
+    // Add the last field
+    fields.push(current);
+    
+    return fields;
+}
+
+function getColumnRangeFromSelection(line: string, selection: vscode.Selection, delimiter: string, fields: string[]): { startColumn: number, endColumn: number } | null {
     try {
-        const text = document.getText();
-        const lines = text.split('\n');
-        const currentLine = position.line;
+        const startChar = selection.start.character;
+        const endChar = selection.end.character;
         
-        const context: string[] = [];
-        let braceDepth = 0;
+        let charCount = 0;
+        let startColumn = -1;
+        let endColumn = -1;
         
-        // Parse from beginning to current position to build CSS context
-        for (let i = 0; i <= currentLine; i++) {
-            const line = lines[i].trim();
+        for (let i = 0; i < fields.length; i++) {
+            const field = fields[i];
+            const fieldStart = charCount;
+            const fieldEnd = charCount + field.length; // Exclusive end
             
-            // Skip empty lines and full-line comments
-            if (!line || line.startsWith('/*')) {
-                continue;
+            // Check if selection start is within this field
+            if (startColumn === -1 && startChar >= fieldStart && startChar < fieldEnd) {
+                startColumn = i;
             }
             
-            // Check for media queries and other at-rules
-            const atRuleMatch = line.match(/^(@[\w-]+)(?:\s+([^{]+))?/);
-            if (atRuleMatch) {
-                const atRule = atRuleMatch[1];
-                const condition = atRuleMatch[2];
-                if (condition) {
-                    context.push(`${atRule} ${condition.trim()}`);
-                } else {
-                    context.push(atRule);
-                }
-                if (line.includes('{')) {
-                    braceDepth++;
-                }
-                continue;
+            // Check if selection end is within this field
+            const lastSelectedChar = endChar - 1;
+            if (lastSelectedChar >= fieldStart && lastSelectedChar < fieldEnd) {
+                endColumn = i;
             }
             
-            // Check for CSS selectors
-            const selectorMatch = line.match(/^([^{]+)\s*{/);
-            if (selectorMatch) {
-                let selector = selectorMatch[1].trim();
-                // Clean up selector for readability
-                selector = selector.replace(/\s+/g, ' ');
-                context.push(selector);
-                braceDepth++;
-                continue;
-            }
-            
-            // Count braces to track nesting level
-            const openBraces = (line.match(/{/g) || []).length;
-            const closeBraces = (line.match(/}/g) || []).length;
-            
-            for (let j = 0; j < closeBraces; j++) {
-                if (braceDepth > 0) {
-                    braceDepth--;
-                    if (context.length > braceDepth) {
-                        context.pop();
-                    }
-                }
-            }
-            
-            braceDepth += openBraces;
-            
-            // Stop if we've gone too far back
-            if (i < currentLine - 50) {
-                break;
+            // Move to next field (add field length + delimiter length)
+            charCount = fieldEnd;
+            if (i < fields.length - 1) {
+                charCount += delimiter.length;
             }
         }
         
-        return context.length > 0 ? context.join(' > ') : null;
+        // If we found start but not end, assume single column
+        if (startColumn !== -1 && endColumn === -1) {
+            endColumn = startColumn;
+        }
+        
+        // If we found end but not start, work backwards
+        if (startColumn === -1 && endColumn !== -1) {
+            startColumn = endColumn;
+        }
+        
+        // Final fallback
+        if (startColumn === -1) {
+            return { startColumn: 0, endColumn: 0 };
+        }
+        
+        return { startColumn, endColumn };
+        
     } catch (error) {
-        return null;
+        return { startColumn: 0, endColumn: 0 };
     }
 }
 
-function getProgrammingContext(document: vscode.TextDocument, position: vscode.Position): string | null {
-    const text = document.getText();
-    const lines = text.split('\n');
-    const currentLine = position.line;
-    const language = document.languageId;
-    
-    const context: string[] = [];
-    
+function detectHeaders(firstRowFields: string[], allLines: string[]): boolean {
     try {
-        // Look backwards from current position to find enclosing scopes
-        for (let i = currentLine; i >= 0; i--) {
-            const line = lines[i].trim();
-            
-            // Skip empty lines and comments
-            if (!line || line.startsWith('//') || line.startsWith('/*') || line.startsWith('*')) {
-                continue;
-            }
-            
-            let match;
-            
-            // Language-specific patterns
-            switch (language) {
-                case 'javascript':
-                case 'typescript':
-                case 'java':
-                case 'csharp':
-                case 'cs':
-                    // Function patterns
-                    match = line.match(/(?:function\s+(\w+)|(\w+)\s*\(.*\)\s*{|(\w+)\s*:\s*function|(\w+)\s*=\s*\(.*\)\s*=>|(\w+)\s*=\s*function)/);
-                    if (match) {
-                        const funcName = match[1] || match[2] || match[3] || match[4] || match[5];
-                        if (!context.includes(funcName)) {
-                            context.unshift(funcName);
-                        }
-                    }
-                    
-                    // Class patterns
-                    match = line.match(/class\s+(\w+)/);
-                    if (match && !context.includes(match[1])) {
-                        context.unshift(match[1]);
-                    }
-                    
-                    // C# specific patterns
-                    if (language === 'csharp' || language === 'cs') {
-                        // Method patterns
-                        match = line.match(/(?:public|private|protected|internal|static)?\s*(?:\w+\s+)*(\w+)\s*\([^)]*\)\s*{/);
-                        if (match && i !== currentLine) {
-                            const methodName = match[1];
-                            if (!context.includes(methodName) && !['if', 'for', 'while', 'switch', 'catch', 'using'].includes(methodName)) {
-                                context.unshift(methodName);
-                            }
-                        }
-                        
-                        // Namespace patterns
-                        match = line.match(/namespace\s+([\w\.]+)/);
-                        if (match && !context.includes(match[1])) {
-                            context.unshift(match[1]);
-                        }
-                        
-                        // Interface patterns
-                        match = line.match(/interface\s+(\w+)/);
-                        if (match && !context.includes(match[1])) {
-                            context.unshift(match[1]);
-                        }
-                        
-                        // Struct patterns
-                        match = line.match(/struct\s+(\w+)/);
-                        if (match && !context.includes(match[1])) {
-                            context.unshift(match[1]);
-                        }
-                    } else {
-                        // Method patterns in classes for JS/TS/Java
-                        match = line.match(/(\w+)\s*\([^)]*\)\s*{/);
-                        if (match && i !== currentLine) {
-                            const methodName = match[1];
-                            if (!context.includes(methodName) && !['if', 'for', 'while', 'switch', 'catch'].includes(methodName)) {
-                                context.unshift(methodName);
-                            }
-                        }
-                    }
-                    break;
-                    
-                case 'python':
-                    // Function/method patterns
-                    match = line.match(/def\s+(\w+)/);
-                    if (match && !context.includes(match[1])) {
-                        context.unshift(match[1]);
-                    }
-                    
-                    // Class patterns
-                    match = line.match(/class\s+(\w+)/);
-                    if (match && !context.includes(match[1])) {
-                        context.unshift(match[1]);
-                    }
-                    break;
-                    
-                case 'cpp':
-                case 'c':
-                    // Function patterns
-                    match = line.match(/(?:[\w:]+\s+)?(\w+)\s*\([^)]*\)\s*{/);
-                    if (match && !context.includes(match[1])) {
-                        const funcName = match[1];
-                        if (!['if', 'for', 'while', 'switch', 'catch'].includes(funcName)) {
-                            context.unshift(funcName);
-                        }
-                    }
-                    
-                    // Class patterns
-                    match = line.match(/class\s+(\w+)/);
-                    if (match && !context.includes(match[1])) {
-                        context.unshift(match[1]);
-                    }
-                    break;
-                    
-                case 'go':
-                    // Function patterns
-                    match = line.match(/func(?:\s+\([^)]+\))?\s+(\w+)/);
-                    if (match && !context.includes(match[1])) {
-                        context.unshift(match[1]);
-                    }
-                    
-                    // Struct/interface patterns
-                    match = line.match(/type\s+(\w+)\s+(?:struct|interface)/);
-                    if (match && !context.includes(match[1])) {
-                        context.unshift(match[1]);
-                    }
-                    break;
-                    
-                case 'rust':
-                    // Function patterns
-                    match = line.match(/fn\s+(\w+)/);
-                    if (match && !context.includes(match[1])) {
-                        context.unshift(match[1]);
-                    }
-                    
-                    // Impl/struct patterns
-                    match = line.match(/(?:struct|impl|enum)\s+(\w+)/);
-                    if (match && !context.includes(match[1])) {
-                        context.unshift(match[1]);
-                    }
-                    break;
-            }
-            
-            // Stop if we've found enough context or gone too far back
-            if (context.length >= 3 || i < currentLine - 100) {
-                break;
-            }
+        // If there's only one line, assume it's data (no headers)
+        if (allLines.length <= 1) {
+            return false;
         }
         
-        return context.length > 0 ? context.join(' > ') : null;
+        // Get the second line to compare
+        const secondLine = allLines[1];
+        if (!secondLine.trim()) {
+            return false;
+        }
+        
+        // Parse the second row
+        const delimiter = detectDelimiter(allLines.join('\n'));
+        const secondRowFields = parseDelimitedLine(secondLine, delimiter);
+        
+        // Heuristics to detect if first row contains headers:
+        
+        // 1. If first row has significantly different data types than second row
+        const firstRowNumbers = firstRowFields.filter(field => {
+            const cleaned = field.trim().replace(/^["']|["']$/g, '');
+            return !isNaN(Number(cleaned)) && cleaned !== '';
+        }).length;
+        
+        const secondRowNumbers = secondRowFields.filter(field => {
+            const cleaned = field.trim().replace(/^["']|["']$/g, '');
+            return !isNaN(Number(cleaned)) && cleaned !== '';
+        }).length;
+        
+        // If first row has significantly fewer numbers, it's likely headers
+        if (secondRowNumbers > firstRowNumbers + 1 && secondRowNumbers >= firstRowFields.length / 2) {
+            return true;
+        }
+        
+        // 2. If first row contains typical header-like words
+        const headerIndicators = ['id', 'name', 'email', 'address', 'phone', 'date', 'time', 'status', 'type', 'code', 'number', 'description', 'title', 'category', 'group'];
+        const headerWords = firstRowFields.some(field => {
+            const cleaned = field.toLowerCase().trim().replace(/^["']|["']$/g, '');
+            return headerIndicators.some(indicator => cleaned.includes(indicator));
+        });
+        
+        if (headerWords) {
+            return true;
+        }
+        
+        // 3. Default assumption: if we can't tell, assume first row is headers
+        return true;
+        
     } catch (error) {
-        return null;
+        // If detection fails, assume headers exist (safer default)
+        return true;
     }
 }
 
@@ -666,408 +742,404 @@ function getDocumentContext(document: vscode.TextDocument, position: vscode.Posi
         case 'xhtml':
         case 'htm':
             return getXmlPath(document, position);
-        case 'javascript':
-        case 'typescript':
-        case 'python':
-        case 'java':
-        case 'csharp':
-        case 'cs':
-        case 'cpp':
-        case 'c':
-        case 'go':
-        case 'rust':
-            return getProgrammingContext(document, position);
-        case 'css':
-        case 'scss':
-        case 'sass':
-        case 'less':
-            return getCssContext(document, position);
-        case 'csv':
-        case 'tsv':
-        case 'psv':
-        case 'ssv':
-        case 'dsv':
-            return getDelimitedContext(document, position);
-        case 'yaml':
-        case 'yml':
-            // For YAML, we could implement a path detector similar to JSON
-            // For now, return null but this could be extended
-            return null;
         default:
             // Check by file extension for files VS Code might not recognize
             if (filename.endsWith('.csv') || filename.endsWith('.tsv') || 
                 filename.endsWith('.psv') || filename.endsWith('.ssv') ||
                 filename.endsWith('.dsv') || filename.endsWith('.txt')) {
-                return getDelimitedContext(document, position);
+                // For delimited files, we need selection context which isn't available here
+                return null;
             }
             return null;
     }
 }
 
-export function activate(context: vscode.ExtensionContext) {
-    console.log('Copy with Context extension is now active!');
+// Command handlers - extracted from the original implementation
+async function handleCopyWithContext(): Promise<void> {
+    const editor = vscode.window.activeTextEditor!; // We know it exists from validation
+    
+    const document = editor.document;
+    const selection = editor.selection;
+    
+    // Get filename - handle unsaved files
+    const fileName = document.fileName;
+    const displayName = document.isUntitled 
+        ? 'Untitled' 
+        : path.basename(fileName);
 
-    // Register the copy with context command
-    let disposable = vscode.commands.registerCommand('copyWithContext.copySelection', async () => {
-        const editor = vscode.window.activeTextEditor;
+    let selectedText: string;
+    let startLine: number;
+    let endLine: number;
+
+    if (selection.isEmpty) {
+        // If no selection, copy the current line
+        const currentLine = selection.active.line;
+        selectedText = document.lineAt(currentLine).text;
+        startLine = currentLine + 1; // VS Code uses 0-based, but display 1-based
+        endLine = startLine;
+    } else {
+        // Copy the selected text
+        selectedText = document.getText(selection);
+        startLine = selection.start.line + 1;
+        endLine = selection.end.line + 1;
+    }
+
+    // Get configuration settings
+    const config = vscode.workspace.getConfiguration('copyWithContext');
+    const showLineNumbers = config.get<boolean>('showLineNumbers', true);
+    const useLineNumberPadding = config.get<boolean>('lineNumberPadding', false);
+    const showContextPath = config.get<boolean>('showContextPath', true);
+    const enableColorCoding = config.get<boolean>('enableColorCoding', false);
+
+    // Get contextual information
+    let contextPath: string | null = null;
+    if (showContextPath) {
+        const language = document.languageId;
+        const filename = document.fileName.toLowerCase();
         
-        if (!editor) {
-            vscode.window.showWarningMessage('No active editor found');
-            return;
-        }
-
-        const document = editor.document;
-        const selection = editor.selection;
-        
-        // Get filename - handle unsaved files
-        const fileName = document.fileName;
-        const displayName = document.isUntitled 
-            ? 'Untitled' 
-            : path.basename(fileName);
-
-        let selectedText: string;
-        let startLine: number;
-        let endLine: number;
-
-        if (selection.isEmpty) {
-            // If no selection, copy the current line
-            const currentLine = selection.active.line;
-            selectedText = document.lineAt(currentLine).text;
-            startLine = currentLine + 1; // VS Code uses 0-based, but display 1-based
-            endLine = startLine;
+        // For delimited files, use selection-aware context detection
+        if (language === 'csv' || language === 'tsv' || language === 'psv' || language === 'ssv' || language === 'dsv' ||
+            filename.endsWith('.csv') || filename.endsWith('.tsv') || filename.endsWith('.psv') || 
+            filename.endsWith('.ssv') || filename.endsWith('.dsv') || filename.endsWith('.txt')) {
+            contextPath = getDelimitedContextWithSelection(document, selection);
         } else {
-            // Copy the selected text
-            selectedText = document.getText(selection);
-            startLine = selection.start.line + 1;
-            endLine = selection.end.line + 1;
+            // Get base context path
+            const baseContext = getDocumentContext(document, selection.start);
+            contextPath = baseContext;
         }
-
-        // Get configuration settings
-        const config = vscode.workspace.getConfiguration('copyWithContext');
-        const showLineNumbers = config.get<boolean>('showLineNumbers', true);
-        const useLineNumberPadding = config.get<boolean>('lineNumberPadding', false);
-        const showContextPath = config.get<boolean>('showContextPath', true);
-        const enableColorCoding = config.get<boolean>('enableColorCoding', false);
-
-        // Get contextual information
-        const contextPath = showContextPath ? getDocumentContext(document, selection.start) : null;
-        
-        // Format the output with optional line numbers on each line
-        let output = '';
-        
-        // Add file context
-        if (startLine === endLine) {
-            output += `// ${displayName}:${startLine}`;
-        } else {
-            output += `// ${displayName}:${startLine}-${endLine}`;
-        }
-        
-        // Add contextual path if available
-        if (contextPath) {
-            output += ` (${contextPath})`;
-        }
-        output += '\n';
-        
-        if (enableColorCoding) {
-            // Generate HTML formatted output with syntax highlighting
-            let codeContent: string;
-            if (showLineNumbers) {
-                const lines = selectedText.split('\n');
-                const maxLineNumber = startLine + lines.length - 1;
-                const padding = useLineNumberPadding ? maxLineNumber.toString().length : 0;
-                
-                const numberedLines = lines.map((line, index) => {
-                    const lineNumber = startLine + index;
-                    const paddedLineNumber = useLineNumberPadding 
-                        ? lineNumber.toString().padStart(padding, ' ')
-                        : lineNumber.toString();
-                    return `${paddedLineNumber}: ${line}`;
-                });
-                codeContent = numberedLines.join('\n');
-            } else {
-                codeContent = selectedText;
-            }
+    }
+    
+    // Format the output
+    let output = '';
+    
+    // Add file context
+    if (startLine === endLine) {
+        output += `// ${displayName}:${startLine}`;
+    } else {
+        output += `// ${displayName}:${startLine}-${endLine}`;
+    }
+    
+    // Add contextual path if available
+    if (contextPath) {
+        output += ` (${contextPath})`;
+    }
+    output += '\n';
+    
+    if (enableColorCoding) {
+        // Generate HTML formatted output with syntax highlighting
+        let codeContent: string;
+        if (showLineNumbers) {
+            const lines = selectedText.split('\n');
+            const maxLineNumber = startLine + lines.length - 1;
+            const padding = useLineNumberPadding ? maxLineNumber.toString().length : 0;
             
+            const numberedLines = lines.map((line, index) => {
+                const lineNumber = startLine + index;
+                const paddedLineNumber = useLineNumberPadding 
+                    ? lineNumber.toString().padStart(padding, ' ')
+                    : lineNumber.toString();
+                return `${paddedLineNumber}: ${line}`;
+            });
+            codeContent = numberedLines.join('\n');
+        } else {
+            codeContent = selectedText;
+        }
+        
+        const language = document.languageId;
+        const highlightedCode = addBasicSyntaxHighlighting(codeContent, language);
+        const displayInfo = `${displayName}:${startLine === endLine ? startLine : `${startLine}-${endLine}`}${contextPath ? ` (${contextPath})` : ''}`;
+        
+        output = `<div style="font-family: 'Consolas', 'Monaco', monospace; background: #1e1e1e; color: #d4d4d4; padding: 16px; border-radius: 4px;">
+<div style="color: #6a9955; margin-bottom: 8px;">// ${displayInfo}</div>
+<pre style="margin: 0; white-space: pre-wrap;">${highlightedCode}</pre>
+</div>`;
+    } else {
+        // Regular plain text format
+        if (showLineNumbers) {
+            const lines = selectedText.split('\n');
+            const maxLineNumber = startLine + lines.length - 1;
+            const padding = useLineNumberPadding ? maxLineNumber.toString().length : 0;
+            
+            const numberedLines = lines.map((line, index) => {
+                const lineNumber = startLine + index;
+                const paddedLineNumber = useLineNumberPadding 
+                    ? lineNumber.toString().padStart(padding, ' ')
+                    : lineNumber.toString();
+                return `${paddedLineNumber}: ${line}`;
+            });
+            
+            output += numberedLines.join('\n');
+        } else {
+            output += selectedText;
+        }
+    }
+
+    // Copy to clipboard
+    await vscode.env.clipboard.writeText(output);
+    
+    // Show success message
+    const lineInfo = startLine === endLine 
+        ? `line ${startLine}` 
+        : `lines ${startLine}-${endLine}`;
+    
+    vscode.window.showInformationMessage(
+        `Copied code from ${displayName} (${lineInfo}) to clipboard`
+    );
+}
+
+async function handleCopyWithContextCustom(): Promise<void> {
+    const editor = vscode.window.activeTextEditor!;
+    
+    // Show input box for custom format
+    const format = await vscode.window.showQuickPick([
+        { 
+            label: 'Comment Style', 
+            description: '// filename:line',
+            value: 'comment'
+        },
+        { 
+            label: 'Markdown Style', 
+            description: '```language\n// filename:line\ncode\n```',
+            value: 'markdown'
+        },
+        { 
+            label: 'HTML with Syntax Highlighting', 
+            description: 'Colored HTML format',
+            value: 'html'
+        },
+        { 
+            label: 'ANSI Colored (Terminal)', 
+            description: 'Colored text for terminal/console',
+            value: 'ansi'
+        },
+        { 
+            label: 'Full Path', 
+            description: 'Include full file path',
+            value: 'fullpath'
+        }
+    ], {
+        placeHolder: 'Choose output format'
+    });
+
+    if (!format) {
+        return;
+    }
+
+    const document = editor.document;
+    const selection = editor.selection;
+    
+    // Get filename
+    const fileName = document.fileName;
+    const displayName = format.value === 'fullpath' 
+        ? (document.isUntitled ? 'Untitled' : fileName)
+        : (document.isUntitled ? 'Untitled' : path.basename(fileName));
+
+    let selectedText: string;
+    let startLine: number;
+    let endLine: number;
+
+    if (selection.isEmpty) {
+        const currentLine = selection.active.line;
+        selectedText = document.lineAt(currentLine).text;
+        startLine = currentLine + 1;
+        endLine = startLine;
+    } else {
+        selectedText = document.getText(selection);
+        startLine = selection.start.line + 1;
+        endLine = selection.end.line + 1;
+    }
+
+    // Get configuration settings
+    const config = vscode.workspace.getConfiguration('copyWithContext');
+    const showLineNumbers = config.get<boolean>('showLineNumbers', true);
+    const useLineNumberPadding = config.get<boolean>('lineNumberPadding', false);
+    const showContextPath = config.get<boolean>('showContextPath', true);
+
+    // Get contextual information
+    let contextPath: string | null = null;
+    if (showContextPath) {
+        const language = document.languageId;
+        const filename = document.fileName.toLowerCase();
+        
+        // For delimited files, use selection-aware context detection
+        if (language === 'csv' || language === 'tsv' || language === 'psv' || language === 'ssv' || language === 'dsv' ||
+            filename.endsWith('.csv') || filename.endsWith('.tsv') || filename.endsWith('.psv') || 
+            filename.endsWith('.ssv') || filename.endsWith('.dsv') || filename.endsWith('.txt')) {
+            contextPath = getDelimitedContextWithSelection(document, selection);
+        } else {
+            const baseContext = getDocumentContext(document, selection.start);
+            contextPath = baseContext;
+        }
+    }
+
+    let output = '';
+    const lineInfo = startLine === endLine ? `${startLine}` : `${startLine}-${endLine}`;
+    
+    // Create display name with context
+    let displayInfo = format.value === 'fullpath' 
+        ? (document.isUntitled ? 'Untitled' : fileName)
+        : (document.isUntitled ? 'Untitled' : path.basename(fileName));
+    
+    displayInfo += `:${lineInfo}`;
+    if (contextPath) {
+        displayInfo += ` (${contextPath})`;
+    }
+    
+    let codeContent: string;
+    if (showLineNumbers) {
+        // Split the selected text into lines and add line numbers
+        const lines = selectedText.split('\n');
+        const maxLineNumber = startLine + lines.length - 1;
+        const padding = useLineNumberPadding ? maxLineNumber.toString().length : 0;
+        
+        const numberedLines = lines.map((line, index) => {
+            const lineNumber = startLine + index;
+            const paddedLineNumber = useLineNumberPadding 
+                ? lineNumber.toString().padStart(padding, ' ')
+                : lineNumber.toString();
+            return `${paddedLineNumber}: ${line}`;
+        });
+        codeContent = numberedLines.join('\n');
+    } else {
+        codeContent = selectedText;
+    }
+
+    switch (format.value) {
+        case 'comment':
+            output = `// ${displayInfo}\n${codeContent}`;
+            break;
+        case 'markdown':
             const language = document.languageId;
-            const highlightedCode = addBasicSyntaxHighlighting(codeContent, language);
-            const displayInfo = `${displayName}:${startLine === endLine ? startLine : `${startLine}-${endLine}`}${contextPath ? ` (${contextPath})` : ''}`;
-            
+            output = `\`\`\`${language}\n// ${displayInfo}\n${codeContent}\n\`\`\``;
+            break;
+        case 'html':
+            const htmlLanguage = document.languageId;
+            const highlightedCode = addBasicSyntaxHighlighting(codeContent, htmlLanguage);
             output = `<div style="font-family: 'Consolas', 'Monaco', monospace; background: #1e1e1e; color: #d4d4d4; padding: 16px; border-radius: 4px;">
 <div style="color: #6a9955; margin-bottom: 8px;">// ${displayInfo}</div>
 <pre style="margin: 0; white-space: pre-wrap;">${highlightedCode}</pre>
 </div>`;
-        } else {
-            // Regular plain text format
-            if (showLineNumbers) {
-                const lines = selectedText.split('\n');
-                const maxLineNumber = startLine + lines.length - 1;
-                const padding = useLineNumberPadding ? maxLineNumber.toString().length : 0;
-                
-                const numberedLines = lines.map((line, index) => {
-                    const lineNumber = startLine + index;
-                    const paddedLineNumber = useLineNumberPadding 
-                        ? lineNumber.toString().padStart(padding, ' ')
-                        : lineNumber.toString();
-                    return `${paddedLineNumber}: ${line}`;
-                });
-                
-                output += numberedLines.join('\n');
-            } else {
-                output += selectedText;
-            }
-        }
+            break;
+        case 'ansi':
+            const ansiLanguage = document.languageId;
+            const ansiColoredCode = generateAnsiColoredText(codeContent, ansiLanguage);
+            output = `\x1b[32m// ${displayInfo}\x1b[0m\n${ansiColoredCode}`;
+            break;
+        case 'fullpath':
+            output = `// ${displayInfo}\n${codeContent}`;
+            break;
+    }
 
-        // Copy to clipboard
-        try {
-            await vscode.env.clipboard.writeText(output);
-            
-            // Show success message
-            const lineInfo = startLine === endLine 
-                ? `line ${startLine}` 
-                : `lines ${startLine}-${endLine}`;
-            
-            vscode.window.showInformationMessage(
-                `Copied code from ${displayName} (${lineInfo}) to clipboard`
-            );
-        } catch (error) {
-            vscode.window.showErrorMessage('Failed to copy to clipboard');
-            console.error('Copy failed:', error);
-        }
-    });
+    await vscode.env.clipboard.writeText(output);
+    vscode.window.showInformationMessage(`Copied with ${format.label} format`);
+}
 
-    context.subscriptions.push(disposable);
+async function handleCopyWithContextHTML(): Promise<void> {
+    const editor = vscode.window.activeTextEditor!;
+    
+    const document = editor.document;
+    const selection = editor.selection;
+    
+    // Get filename
+    const fileName = document.fileName;
+    const displayName = document.isUntitled 
+        ? 'Untitled' 
+        : path.basename(fileName);
 
-    // Register a command for copying with custom format
-    let customDisposable = vscode.commands.registerCommand('copyWithContext.copySelectionCustom', async () => {
-        const editor = vscode.window.activeTextEditor;
-        
-        if (!editor) {
-            vscode.window.showWarningMessage('No active editor found');
-            return;
-        }
+    let selectedText: string;
+    let startLine: number;
+    let endLine: number;
 
-        // Show input box for custom format
-        const format = await vscode.window.showQuickPick([
-            { 
-                label: 'Comment Style', 
-                description: '// filename:line',
-                value: 'comment'
-            },
-            { 
-                label: 'Markdown Style', 
-                description: '```language\n// filename:line\ncode\n```',
-                value: 'markdown'
-            },
-            { 
-                label: 'HTML with Syntax Highlighting', 
-                description: 'Colored HTML format',
-                value: 'html'
-            },
-            { 
-                label: 'ANSI Colored (Terminal)', 
-                description: 'Colored text for terminal/console',
-                value: 'ansi'
-            },
-            { 
-                label: 'Full Path', 
-                description: 'Include full file path',
-                value: 'fullpath'
-            }
-        ], {
-            placeHolder: 'Choose output format'
-        });
+    if (selection.isEmpty) {
+        const currentLine = selection.active.line;
+        selectedText = document.lineAt(currentLine).text;
+        startLine = currentLine + 1;
+        endLine = startLine;
+    } else {
+        selectedText = document.getText(selection);
+        startLine = selection.start.line + 1;
+        endLine = selection.end.line + 1;
+    }
 
-        if (!format) {
-            return;
-        }
+    // Get configuration settings
+    const config = vscode.workspace.getConfiguration('copyWithContext');
+    const showLineNumbers = config.get<boolean>('showLineNumbers', true);
+    const useLineNumberPadding = config.get<boolean>('lineNumberPadding', false);
+    const showContextPath = config.get<boolean>('showContextPath', true);
 
-        const document = editor.document;
-        const selection = editor.selection;
-        
-        // Get filename
-        const fileName = document.fileName;
-        const displayName = format.value === 'fullpath' 
-            ? (document.isUntitled ? 'Untitled' : fileName)
-            : (document.isUntitled ? 'Untitled' : path.basename(fileName));
-
-        let selectedText: string;
-        let startLine: number;
-        let endLine: number;
-
-        if (selection.isEmpty) {
-            const currentLine = selection.active.line;
-            selectedText = document.lineAt(currentLine).text;
-            startLine = currentLine + 1;
-            endLine = startLine;
-        } else {
-            selectedText = document.getText(selection);
-            startLine = selection.start.line + 1;
-            endLine = selection.end.line + 1;
-        }
-
-        // Get configuration settings
-        const config = vscode.workspace.getConfiguration('copyWithContext');
-        const showLineNumbers = config.get<boolean>('showLineNumbers', true);
-        const useLineNumberPadding = config.get<boolean>('lineNumberPadding', false);
-        const showContextPath = config.get<boolean>('showContextPath', true);
-
-        // Get contextual information
-        const contextPath = showContextPath ? getDocumentContext(document, selection.start) : null;
-
-        let output = '';
-        const lineInfo = startLine === endLine ? `${startLine}` : `${startLine}-${endLine}`;
-        
-        // Create display name with context
-        let displayInfo = format.value === 'fullpath' 
-            ? (document.isUntitled ? 'Untitled' : fileName)
-            : (document.isUntitled ? 'Untitled' : path.basename(fileName));
-        
-        displayInfo += `:${lineInfo}`;
-        if (contextPath) {
-            displayInfo += ` (${contextPath})`;
-        }
-        
-        let codeContent: string;
-        if (showLineNumbers) {
-            // Split the selected text into lines and add line numbers
-            const lines = selectedText.split('\n');
-            const maxLineNumber = startLine + lines.length - 1;
-            const padding = useLineNumberPadding ? maxLineNumber.toString().length : 0;
-            
-            const numberedLines = lines.map((line, index) => {
-                const lineNumber = startLine + index;
-                const paddedLineNumber = useLineNumberPadding 
-                    ? lineNumber.toString().padStart(padding, ' ')
-                    : lineNumber.toString();
-                return `${paddedLineNumber}: ${line}`;
-            });
-            codeContent = numberedLines.join('\n');
-        } else {
-            codeContent = selectedText;
-        }
-
-        switch (format.value) {
-            case 'comment':
-                output = `// ${displayInfo}\n${codeContent}`;
-                break;
-            case 'markdown':
-                const language = document.languageId;
-                output = `\`\`\`${language}\n// ${displayInfo}\n${codeContent}\n\`\`\``;
-                break;
-            case 'html':
-                const htmlLanguage = document.languageId;
-                const highlightedCode = addBasicSyntaxHighlighting(codeContent, htmlLanguage);
-                output = `<div style="font-family: 'Consolas', 'Monaco', monospace; background: #1e1e1e; color: #d4d4d4; padding: 16px; border-radius: 4px;">
-<div style="color: #6a9955; margin-bottom: 8px;">// ${displayInfo}</div>
-<pre style="margin: 0; white-space: pre-wrap;">${highlightedCode}</pre>
-</div>`;
-                break;
-            case 'ansi':
-                const ansiLanguage = document.languageId;
-                const ansiColoredCode = generateAnsiColoredText(codeContent, ansiLanguage);
-                output = `\x1b[32m// ${displayInfo}\x1b[0m\n${ansiColoredCode}`;
-                break;
-            case 'fullpath':
-                output = `// ${displayInfo}\n${codeContent}`;
-                break;
-        }
-
-        try {
-            await vscode.env.clipboard.writeText(output);
-            vscode.window.showInformationMessage(`Copied with ${format.label} format`);
-        } catch (error) {
-            vscode.window.showErrorMessage('Failed to copy to clipboard');
-        }
-    });
-
-    context.subscriptions.push(customDisposable);
-
-    // Register a command for copying with colored HTML format
-    let htmlDisposable = vscode.commands.registerCommand('copyWithContext.copySelectionHTML', async () => {
-        const editor = vscode.window.activeTextEditor;
-        
-        if (!editor) {
-            vscode.window.showWarningMessage('No active editor found');
-            return;
-        }
-
-        const document = editor.document;
-        const selection = editor.selection;
-        
-        // Get filename
-        const fileName = document.fileName;
-        const displayName = document.isUntitled 
-            ? 'Untitled' 
-            : path.basename(fileName);
-
-        let selectedText: string;
-        let startLine: number;
-        let endLine: number;
-
-        if (selection.isEmpty) {
-            const currentLine = selection.active.line;
-            selectedText = document.lineAt(currentLine).text;
-            startLine = currentLine + 1;
-            endLine = startLine;
-        } else {
-            selectedText = document.getText(selection);
-            startLine = selection.start.line + 1;
-            endLine = selection.end.line + 1;
-        }
-
-        // Get configuration settings
-        const config = vscode.workspace.getConfiguration('copyWithContext');
-        const showLineNumbers = config.get<boolean>('showLineNumbers', true);
-        const useLineNumberPadding = config.get<boolean>('lineNumberPadding', false);
-        const showContextPath = config.get<boolean>('showContextPath', true);
-
-        // Get contextual information
-        const contextPath = showContextPath ? getDocumentContext(document, selection.start) : null;
-
-        const lineInfo = startLine === endLine ? `${startLine}` : `${startLine}-${endLine}`;
-        let displayInfo = `${displayName}:${lineInfo}`;
-        if (contextPath) {
-            displayInfo += ` (${contextPath})`;
-        }
-        
-        // Generate line-numbered content
-        let codeContent: string;
-        if (showLineNumbers) {
-            const lines = selectedText.split('\n');
-            const maxLineNumber = startLine + lines.length - 1;
-            const padding = useLineNumberPadding ? maxLineNumber.toString().length : 0;
-            
-            const numberedLines = lines.map((line, index) => {
-                const lineNumber = startLine + index;
-                const paddedLineNumber = useLineNumberPadding 
-                    ? lineNumber.toString().padStart(padding, ' ')
-                    : lineNumber.toString();
-                return `${paddedLineNumber}: ${line}`;
-            });
-            codeContent = numberedLines.join('\n');
-        } else {
-            codeContent = selectedText;
-        }
-
-        // Generate HTML with syntax highlighting
+    // Get contextual information
+    let contextPath: string | null = null;
+    if (showContextPath) {
         const language = document.languageId;
-        const highlightedCode = addBasicSyntaxHighlighting(codeContent, language);
+        const filename = document.fileName.toLowerCase();
         
-        const htmlOutput = `<div style="font-family: 'Consolas', 'Monaco', monospace; background: #1e1e1e; color: #d4d4d4; padding: 16px; border-radius: 4px;">
+        // For delimited files, use selection-aware context detection
+        if (language === 'csv' || language === 'tsv' || language === 'psv' || language === 'ssv' || language === 'dsv' ||
+            filename.endsWith('.csv') || filename.endsWith('.tsv') || filename.endsWith('.psv') || 
+            filename.endsWith('.ssv') || filename.endsWith('.dsv') || filename.endsWith('.txt')) {
+            contextPath = getDelimitedContextWithSelection(document, selection);
+        } else {
+            const baseContext = getDocumentContext(document, selection.start);
+            contextPath = baseContext;
+        }
+    }
+
+    const lineInfo = startLine === endLine ? `${startLine}` : `${startLine}-${endLine}`;
+    let displayInfo = `${displayName}:${lineInfo}`;
+    if (contextPath) {
+        displayInfo += ` (${contextPath})`;
+    }
+    
+    // Generate line-numbered content
+    let codeContent: string;
+    if (showLineNumbers) {
+        const lines = selectedText.split('\n');
+        const maxLineNumber = startLine + lines.length - 1;
+        const padding = useLineNumberPadding ? maxLineNumber.toString().length : 0;
+        
+        const numberedLines = lines.map((line, index) => {
+            const lineNumber = startLine + index;
+            const paddedLineNumber = useLineNumberPadding 
+                ? lineNumber.toString().padStart(padding, ' ')
+                : lineNumber.toString();
+            return `${paddedLineNumber}: ${line}`;
+        });
+        codeContent = numberedLines.join('\n');
+    } else {
+        codeContent = selectedText;
+    }
+
+    // Generate HTML with syntax highlighting
+    const language = document.languageId;
+    const highlightedCode = addBasicSyntaxHighlighting(codeContent, language);
+    
+    const htmlOutput = `<div style="font-family: 'Consolas', 'Monaco', monospace; background: #1e1e1e; color: #d4d4d4; padding: 16px; border-radius: 4px;">
 <div style="color: #6a9955; margin-bottom: 8px;">// ${displayInfo}</div>
 <pre style="margin: 0; white-space: pre-wrap;">${highlightedCode}</pre>
 </div>`;
 
-        try {
-            await vscode.env.clipboard.writeText(htmlOutput);
-            vscode.window.showInformationMessage(`Copied colored HTML code from ${displayName} (${lineInfo}) to clipboard`);
-        } catch (error) {
-            vscode.window.showErrorMessage('Failed to copy to clipboard');
-            console.error('Copy failed:', error);
-        }
+    await vscode.env.clipboard.writeText(htmlOutput);
+    vscode.window.showInformationMessage(`Copied colored HTML code from ${displayName} (${lineInfo}) to clipboard`);
+}
+
+// Extension activation with safety wrappers
+export function activate(context: vscode.ExtensionContext) {
+    console.log('Copy with Context extension is now active!');
+
+    // Register commands with safety wrappers
+    let disposable = vscode.commands.registerCommand('copyWithContext.copySelection', async () => {
+        await safeExecuteCommand(handleCopyWithContext);
     });
 
-    context.subscriptions.push(htmlDisposable);
+    let customDisposable = vscode.commands.registerCommand('copyWithContext.copySelectionCustom', async () => {
+        await safeExecuteCommand(handleCopyWithContextCustom);
+    });
+
+    let htmlDisposable = vscode.commands.registerCommand('copyWithContext.copySelectionHTML', async () => {
+        await safeExecuteCommand(handleCopyWithContextHTML);
+    });
+
+    context.subscriptions.push(disposable, customDisposable, htmlDisposable);
 }
 
 export function deactivate() {}
