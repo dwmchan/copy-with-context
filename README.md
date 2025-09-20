@@ -1,208 +1,241 @@
 # Copy with Context - VS Code Extension
 
-A VS Code extension that copies code snippets with filename and line number context, perfect for documentation, code reviews, and sharing code with proper attribution.
+> Born from the frustration of constantly copying and pasting code snippets, data, and configuration fragments without any context about where they came from or what they represented.
+
+A VS Code extension that copies code snippets with intelligent contextual information - filename, line numbers, and smart path detection for structured data. Perfect for documentation, code reviews, debugging, and sharing code with proper attribution.
+
+## The Problem This Solves
+
+Have you ever:
+- Copied a JSON snippet and forgot which property path it came from?
+- Shared XML data without knowing which nested element you were looking at?
+- Pasted code in Slack without line numbers, making it impossible to reference?
+- Lost track of which file a configuration came from?
+- Struggled to explain CSV data without column context?
+
+This extension was created to solve exactly these problems - providing rich context for any code or data you copy.
 
 ## Features
 
-- 📋 Copy selected code with filename and line numbers
-- 📍 **Line numbers on each line** for easy reference and navigation
-- 🗂️ **Contextual path information** - JSON paths, XML paths, function/class names, CSS selectors, delimited file columns
-- 🎨 **Comprehensive syntax highlighting** - 10+ languages including CSS/SCSS/SASS/LESS
-- 📊 **Smart delimited file support** - Auto-detects CSV, TSV, PSV, SSV and custom delimiter formats
-- ⌨️ Keyboard shortcuts: 
-  - `Ctrl+Alt+C` - Copy with context (plain text or colored based on settings)
-  - `Ctrl+Alt+H` - Copy with colored HTML format
-- 🖱️ Right-click context menu options
-- 🎨 Multiple output formats (plain, markdown, HTML, ANSI colors, full path)
-- 📂 Handles unsaved files gracefully
-- ⚙️ Configurable settings for line numbers, context paths, and color coding
-- 📐 Optional line number padding for perfect alignment
-- 🔍 Smart context detection for different file types
-- 🌈 Customizable color themes (dark/light)
-- 🎯 Perfect for web development with full CSS/HTML/JS support
-- 📈 Data analysis friendly with comprehensive delimited file support
+### 🔧 Smart Context Detection
+- **JSON/JSONC**: Full property paths (e.g., `database.connection.settings`)
+- **XML/HTML**: Element hierarchy with array indices (e.g., `root > items[2] > name`)
+- **CSV/TSV/PSV**: Intelligent column detection with proper delimiter handling
+- **Programming Languages**: Function and class context for JavaScript, TypeScript, Python, C#, and more
+- **CSS/SCSS/SASS/LESS**: Selector context and media query detection
 
-## Output Examples
+### 📝 Multiple Output Formats
+- **Plain Text**: Clean monospace with context header
+- **HTML with Syntax Highlighting**: Rich colored output for emails, Slack, documentation
+- **Markdown**: Code blocks with language specification for GitHub, wikis
+- **ANSI Colored**: Terminal-friendly colored output
+- **Custom Formats**: Choose your preferred format on-the-fly
 
-### Single Line
-```
-// example.js:42
-42: const result = processData(input);
-```
+### 🎨 Comprehensive Syntax Highlighting
+- **10+ Languages**: JavaScript, TypeScript, Python, C#, JSON, XML, HTML, CSS, YAML
+- **Smart Color Coding**: Professional color schemes for different themes
+- **Delimited Files**: Auto-detects CSV, TSV, PSV, SSV with proper formatting
 
-### Multiple Lines
-```
-// utils.ts:15-18
-15: function calculateTotal(items) {
-16:   return items.reduce((sum, item) => {
-17:     return sum + item.price;
-18:   }, 0);
-19: }
-```
+### ⚡ Performance & Reliability
+- **File Size Protection**: Automatic handling of large files (configurable up to 50MB)
+- **Error Recovery**: Graceful fallbacks when parsing fails
+- **Memory Efficient**: Optimized processing for large codebases
+- **Safe Operations**: No crashes, no freezing, always recoverable
 
-### Markdown Format
-````
+### ⌨️ Convenient Usage
+- **Keyboard Shortcuts**: 
+  - `Ctrl+Alt+C` (Windows/Linux) or `Cmd+Alt+C` (Mac) - Copy with context
+  - `Ctrl+Alt+H` (Windows/Linux) or `Cmd+Alt+H` (Mac) - Copy with HTML highlighting
+- **Right-Click Menu**: Context menu integration
+- **Command Palette**: All features accessible via `Ctrl+Shift+P`
+
+## Installation
+
+1. Open VS Code
+2. Press `Ctrl+P` to open Quick Open
+3. Type `ext install copy-with-context`
+4. Press Enter and reload VS Code
+
+Or install from the [VS Code Marketplace](https://marketplace.visualstudio.com/items?itemName=donald-chan.copy-with-context).
+
+## Usage Examples
+
+### JSON Context Detection
 ```javascript
-// example.js:42-44
-42: function greet(name) {
-43:   console.log(`Hello, ${name}!`);
-44: }
-```
-````
-
-## Setup Instructions
-
-### 1. Create the Extension Structure
-Create a new folder for your extension and set up the following structure:
-```
-copy-with-context/
-├── src/
-│   └── extension.ts
-├── package.json
-├── tsconfig.json
-└── README.md
+// config.json:15 (database.connection.port)
+15: "port": 5432
 ```
 
-### 2. Install Dependencies
-Open a terminal in your extension folder and run:
-```bash
-npm install
+### XML with Array Indices
+```xml
+// users.xml:8-12 (users > user[1] > profile)
+8: <profile>
+9:   <name>John Doe</name>
+10:   <email>john@example.com</email>
+11:   <role>admin</role>
+12: </profile>
 ```
 
-### 3. Compile the Extension
-Compile the TypeScript code:
-```bash
-npm run compile
+### CSV Column Context
+```csv
+// data.csv:3 (CSV (Comma-Separated) > Email, Phone)
+3: john.doe@company.com,+1-555-0123
 ```
 
-Or watch for changes during development:
-```bash
-npm run watch
+### Function Context
+```javascript
+// utils.js:42-46 (UserService > validateEmail)
+42: function validateEmail(email) {
+43:   const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+44:   return emailRegex.test(email);
+45: }
 ```
 
-### 4. Test the Extension
-1. Open VS Code in your extension folder
-2. Press `F5` to open a new Extension Development Host window
-3. In the new window, open any code file
-4. Select some code and press `Ctrl+Shift+C` (or `Cmd+Shift+C` on Mac)
-5. Or right-click and select "Copy with Context"
+### HTML with Syntax Highlighting
+Rich HTML output perfect for emails, Slack, or documentation:
 
-### 5. Package the Extension (Optional)
-To create a `.vsix` file for distribution:
-```bash
-npm install -g vsce
-vsce package
+```html
+<div style="font-family: 'Consolas', 'Monaco', monospace; background: #1e1e1e; color: #d4d4d4; padding: 16px; border-radius: 4px;">
+<div style="color: #6a9955; margin-bottom: 8px;">// config.js:25-30 (exports > database)</div>
+<pre style="margin: 0; white-space: pre-wrap;">
+<span style="color: #569CD6">const</span> <span style="color: #DCDCAA">database</span> = {
+  <span style="color: #9CDCFE">host</span>: <span style="color: #CE9178">'localhost'</span>,
+  <span style="color: #9CDCFE">port</span>: <span style="color: #B5CEA8">5432</span>
+};
+</pre>
+</div>
 ```
-
-## Usage
-
-### Basic Copy with Context
-1. **Select code** or place cursor on a line
-2. **Press `Ctrl+Alt+C`** (or `Cmd+Alt+C` on Mac)
-3. **Or right-click** and select "Copy with Context"
-4. **Paste** the formatted code with filename, line numbers, and context
-
-### Colored HTML Copy
-1. **Select code** you want to copy with syntax highlighting
-2. **Press `Ctrl+Alt+H`** (or `Cmd+Alt+H` on Mac) 
-3. **Or right-click** and select "Copy with Context (Colored HTML)"
-4. **Paste into applications** that support rich text (Word, Gmail, Slack rich text, etc.)
-
-### Custom Format Selection
-1. **Select code** you want to copy
-2. **Open Command Palette** (`Ctrl+Shift+P` / `Cmd+Shift+P`)
-3. **Type "Copy with Context Custom"**
-4. **Choose format:**
-   - **Comment Style** - Plain text with comment header
-   - **Markdown Style** - Code block with language specification
-   - **HTML with Syntax Highlighting** - Rich colored HTML
-   - **ANSI Colored (Terminal)** - Colored text for console/terminal
-   - **Full Path** - Include complete file path instead of filename only
-
-### Settings Configuration
-Access settings through:
-- **File → Preferences → Settings**
-- **Search for "Copy with Context"**
-- **Toggle options** like line numbers, color coding, context paths
-
-### Best Practices
-
-**For Documentation:**
-- Use **Markdown format** for README files and documentation
-- Enable **context paths** to show function/class information
-
-**For Code Reviews:**
-- Use **HTML format** for rich text applications (email, Slack)
-- Enable **line number padding** for better alignment
-
-**For Terminal/Console:**
-- Use **ANSI colored format** for terminal applications
-- Disable line numbers if copying large blocks
-
-**For Plain Text Sharing:**
-- Use **Comment Style** for simple text sharing
-- Keep **line numbers enabled** for easy reference
 
 ## Configuration
 
-### Settings
-You can customize the extension behavior in VS Code settings:
+Customize the extension through VS Code Settings (`Ctrl+,`):
 
-- **`copyWithContext.showLineNumbers`** (boolean, default: `true`): Show line numbers on each line of copied code
-- **`copyWithContext.lineNumberPadding`** (boolean, default: `false`): Add padding to line numbers for consistent alignment  
-- **`copyWithContext.showContextPath`** (boolean, default: `true`): Show contextual path information (JSON paths, XML paths, function/class names)
+| Setting | Default | Description |
+|---------|---------|-------------|
+| `copyWithContext.showLineNumbers` | `true` | Show line numbers on each copied line |
+| `copyWithContext.lineNumberPadding` | `false` | Add padding for consistent line number alignment |
+| `copyWithContext.showContextPath` | `true` | Show contextual path information |
+| `copyWithContext.enableColorCoding` | `false` | Enable syntax highlighting in default copy |
+| `copyWithContext.colorTheme` | `"dark"` | Color theme for syntax highlighting |
+| `copyWithContext.showArrayIndices` | `true` | Show array indices in context paths |
+| `copyWithContext.maxFileSize` | `5000000` | Maximum file size to process (bytes) |
 
-### Context Detection
-The extension automatically detects context based on file type:
-
-- **JSON/JSONC**: Shows the path to the selected value (e.g., `database.connection.port`)
-- **XML/HTML**: Shows the XML element path (e.g., `root > config > database`)
-- **JavaScript/TypeScript**: Shows function and class context (e.g., `UserService > validateUser`)
-- **Python**: Shows class and method context (e.g., `DatabaseManager > connect`)  
-- **Java/C#**: Shows class and method context
-- **C/C++**: Shows function and class context
-- **Go**: Shows function and struct context
-- **Rust**: Shows function and impl context
-
-### Keyboard Shortcuts
-You can customize the keyboard shortcut by:
-1. Go to File → Preferences → Keyboard Shortcuts
-2. Search for "Copy with Context"
-3. Set your preferred keybinding
-
-### Example with Line Number Padding
-When `lineNumberPadding` is enabled, line numbers are padded for better alignment:
-```
-// example.js:8-12 (processItems)
- 8: function processItems(items) {
- 9:   for (let i = 0; i < items.length; i++) {
-10:     console.log(items[i]);
-11:   }
-12: }
-
-## Development
-
-### Adding New Features
-The main logic is in `src/extension.ts`. Key functions:
-- `activate()`: Called when extension starts
-- `copyWithContext.copySelection`: Main copy command
-- `copyWithContext.copySelectionCustom`: Custom format copy
-
-### Modifying Output Format
-Edit the output formatting in the command handlers. Current format:
-```typescript
-// Add file context
-if (startLine === endLine) {
-    output += `// ${displayName}:${startLine}\n`;
-} else {
-    output += `// ${displayName}:${startLine}-${endLine}\n`;
+### Example Configuration
+```json
+{
+  "copyWithContext.showLineNumbers": true,
+  "copyWithContext.showContextPath": true,
+  "copyWithContext.enableColorCoding": false,
+  "copyWithContext.maxFileSize": 10000000
 }
 ```
 
+## Advanced Features
+
+### Custom Format Selection
+1. Select code or place cursor
+2. Open Command Palette (`Ctrl+Shift+P`)
+3. Type "Copy with Context Custom"
+4. Choose from multiple formats:
+   - Comment Style
+   - Markdown Style  
+   - HTML with Syntax Highlighting
+   - ANSI Colored (Terminal)
+   - Full Path
+
+### Large File Handling
+The extension automatically handles large files:
+- **< 5MB**: Full processing with all features
+- **5MB - 50MB**: Shows warning, allows user choice
+- **> 50MB**: Prevents processing to avoid performance issues
+
+### Intelligent Delimiter Detection
+Automatically detects and handles:
+- **CSV** (Comma-separated)
+- **TSV** (Tab-separated)
+- **PSV** (Pipe-separated)
+- **SSV** (Semicolon-separated)
+- **Custom delimiters** (colon, space, etc.)
+
+## Use Cases
+
+### 📧 Professional Communication
+- **Bug Reports**: Include exact line numbers and file context
+- **Code Reviews**: Share snippets with clear location references  
+- **Documentation**: Rich formatted code blocks with syntax highlighting
+
+### 💬 Team Collaboration
+- **Slack/Teams**: Colored code blocks that stand out
+- **Email**: Professional HTML formatting
+- **GitHub Issues**: Properly formatted code blocks with context
+
+### 📚 Documentation & Tutorials
+- **README files**: Consistent code formatting
+- **Wikis**: Context-aware code snippets
+- **Blog posts**: Professional syntax highlighting
+
+### 🐛 Debugging & Support
+- **Stack Overflow**: Clear context and formatting
+- **Support tickets**: Exact file and line references
+- **Code sharing**: Always know where code came from
+
+## Development
+
+### Building from Source
+```bash
+git clone https://github.com/dwmchan/copy-with-context.git
+cd copy-with-context
+npm install
+npm run compile
+```
+
+### Running Tests
+```bash
+npm test
+```
+
+### Code Quality
+```bash
+npm run lint
+```
+
+## Supported File Types
+
+| Category | Languages/Formats |
+|----------|-------------------|
+| **Programming** | JavaScript, TypeScript, Python, C#, Java, C/C++, Go, Rust |
+| **Data** | JSON, JSONC, XML, HTML, YAML, CSV, TSV, PSV, SSV |
+| **Styling** | CSS, SCSS, SASS, LESS |
+| **Markup** | HTML, XML, XHTML, Markdown |
+| **Configuration** | YAML, JSON, TOML, INI |
+
+## Keyboard Shortcuts
+
+| Shortcut | Action |
+|----------|--------|
+| `Ctrl+Alt+C` (`Cmd+Alt+C` on Mac) | Copy with context (default format) |
+| `Ctrl+Alt+H` (`Cmd+Alt+H` on Mac) | Copy with HTML syntax highlighting |
+
+*All shortcuts can be customized in VS Code's Keyboard Shortcuts settings.*
+
 ## Contributing
 
-Feel free to submit issues and enhancement requests!
+Contributions are welcome! Please feel free to submit issues and enhancement requests.
+
+1. Fork the repository
+2. Create your feature branch (`git checkout -b feature/amazing-feature`)
+3. Commit your changes (`git commit -m 'Add amazing feature'`)
+4. Push to the branch (`git push origin feature/amazing-feature`)
+5. Open a Pull Request
 
 ## License
 
-MIT License - feel free to modify and distribute.
+This project is licensed under the MIT License - see the [LICENSE.md](LICENSE.md) file for details.
+
+## Changelog
+
+See [CHANGELOG.md](CHANGELOG.md) for a detailed list of changes and updates.
+
+---
+
+**Stop copying code without context. Start copying with intelligence.**
